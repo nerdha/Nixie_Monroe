@@ -1,15 +1,24 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 
+// Arduino pin numbers for the low end lines (selecting the value displayed)
 int numLines[10] = { 45, 44, 43, 42, 41, 40, 31, 30, 29, 28 };
+// Arduino pin numbers for the high end lines (selecting the tube to light up)
 int digitLines[12] = { 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6 };
+
+// Arduino pin number for the top button
 int buttonA = 19;
+// Arduino pin number for the bottom button
 int buttonB = 18;
+// Arduino analog port for the knob
 int analogKnob = 0;
 
-int digits[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1 };
+// The values currently displayed on each tube. "-1" means the tube
+// is off.
+int digits[12] = { -1, -1, -1, -1, -1, -1, -1 , -1, -1, -1, -1, -1 };
 
 void setup() {
+  // Set all number and digit lines as outputs and turn them off
   for (int i = 0; i < 10; i++) {
       pinMode(numLines[i],OUTPUT);
       digitalWrite(numLines[i],LOW);
@@ -18,30 +27,41 @@ void setup() {
       pinMode(digitLines[i],OUTPUT);
       digitalWrite(digitLines[i],LOW);
   }
+  // Buttons are active low
   pinMode(buttonA,INPUT_PULLUP);
   pinMode(buttonB,INPUT_PULLUP);
+  // Turn off interupts during timer configuration
   cli();
-  // Clock 3 is for second timing
+  // Timer 3 is used for clock ticks at one-second intervals
   TCCR3A = 0x00; // 0x04 is CTC
   TCCR3B = 0x0C; // 0x04 is clock prescaler
   TIMSK3 = 0x02; // OCR1A match interrupt
   OCR3A = 62500;
-  // Clock 2 is for tube cycling
+  // Timer 2 is used to refresh each tube in turn
   TCCR2A = 0x00;
   TCCR2B = 0x04;
   TIMSK2 = 0x01;
+  // Reenable interrupts
   sei();
   Serial.begin(15200);
 }
 
+// The index of the digit currently illuminated
 int lastDigit = -1;
+// The index of the number line currently asserted
 int lastNum = -1;
 
-unsigned long long epoch = 135840000;
+// The default time, in seconds since the UNIX epoch
+unsigned long long epoch = 1358650000LL;
 
+// This is called every second. The array of digits should
+// be updated to reflect the current time.
+// This function is *not* called when the clock is in "set"
+// mode (when the user is adjusting the time).
 void updateDigits() {
   // Update digits from epoch.
-  // This is where various date modes would go.
+  // This is where various date modes would go (swatch time,
+  // military time, etc.).
   
   if (1) {
     // unix epoch; 10 digits long. Left justified.
@@ -55,6 +75,9 @@ void updateDigits() {
   }
 }
 
+// This is called when "set" mode is exited. It's assumed
+// the user has set the correct time; update the epoch value
+// based on the values of the digits.
 void updateEpoch() {
   // Update epoch from digits.
   // This is where the various date modes would go.
@@ -68,6 +91,9 @@ void updateEpoch() {
   }
 }
 
+// Turn off the previously lit tube and illuminate the
+// given number on the specified tube. If -1 is specified,
+// the tube is not lit.
 void setTube(int digit, int num) {
   if (lastDigit != -1) {
     digitalWrite(digitLines[lastDigit],LOW);
@@ -86,48 +112,65 @@ void setTube(int digit, int num) {
   lastDigit = digit;
 }
 
-int d = 0;
-
-long long number = 123456789012LL;
-
+// Previous states of the A and B buttons;
+// used for debouncing.
 boolean bstateA = true;
 boolean bstateB = true;
 
+// The digit currently being set. If -1, then
+// the clock is not in set time mode.
 int editDigit = -1;
+// The index of the currently illuminated tube.
 int displayedDigit = 0;
+// Previous value of the potentiometer
 int oldVal = 0;
+// Current value of the potentiometer
 int val = 0;
+// Scrap variable used to blink digits in set mode.
 int blinkCycle = 0;
 
+// Set to true once a second to indicate that the epoch has
+// changed and the digits need to be updated to reflect the
+// new time.
 volatile boolean needsUpdate = true;
+// The user has changed the values on the tubes in set time mode.
 boolean valueChanged = false;
 
 void loop() {
   if (needsUpdate) { needsUpdate = false; updateDigits(); }
-  delayMicroseconds(100);
+  // Small delay to aid debouncing
+  delayMicroseconds(50);
   boolean nbA = digitalRead(buttonA);
   boolean nbB = digitalRead(buttonB);
   if (!bstateA && nbA) {
+    // On button A press, enter edit mode...
     editDigit++;
     if (editDigit >= 12) {
+      // ... or leave edit mode if they cycle through the
+      // last digit.
       editDigit = -1;
     }
   }
   if (!bstateB && nbB) {
+    // On button B press, go back a digit. Eventually this may
+    // be used to change display modes when not in set time mode.
     if (editDigit >= 0) {
       editDigit--;
       if (editDigit < 0) editDigit = -1;
     } else {
-      // mode change
+      // mode change?
     }
   }
 
   if ((editDigit == -1) && valueChanged) {
+    // If we're not editing and the value has changed, update the epoch!
     valueChanged = false;
     updateEpoch();
   }
   
+  // Save button states
   bstateA = nbA; bstateB = nbB;
+  // Save potentiometer value state
   oldVal = val;
   // oh, great, used a log taper pot instead of linear.
   // luckily these are only marginally log. We'll hack it.
@@ -138,8 +181,8 @@ void loop() {
   } else {
     val = 4+((6*(input-elbow)) / (1024-elbow));
   }
-  //val = (input*(input/102))/102;// analogRead(0)/102;
   if ((editDigit != -1) && (val != oldVal)) {
+    // The knob has been turned; update the digit
     if (val > 10) { val = 9; }
     digits[editDigit] = val;
     blinkCycle = 0;
@@ -147,8 +190,10 @@ void loop() {
   }
 }
 
+// Number of all-tube cycles per "blink" cycle
 const int BCYCLEN=80;
 
+// Interrupt for udating the tubes
 ISR(TIMER2_OVF_vect) {
   int d = digits[displayedDigit];
   if ((displayedDigit == editDigit) && (blinkCycle > (BCYCLEN/2))) {
@@ -162,6 +207,7 @@ ISR(TIMER2_OVF_vect) {
   }
 }
 
+// Interrupt for clock ticks
 ISR(TIMER3_COMPA_vect) {
   if (editDigit == -1) {
     epoch++;
