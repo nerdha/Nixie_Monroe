@@ -141,6 +141,10 @@ int oldVal = 0;
 int val = 0;
 // Scrap variable used to blink digits in set mode.
 int blinkCycle = 0;
+// Number of imaginary nixie tubes to slow updating
+volatile int IMAGINARY_TUBES = 0;
+// Flag to know if the display should not update (we're off)
+volatile boolean awake = true;
 
 // Set to true once a second to indicate that the epoch has
 // changed and the digits need to be updated to reflect the
@@ -194,12 +198,23 @@ void loop() {
   } else {
     val = 4+((6*(input-elbow)) / (1024-elbow));
   }
-  if ((editDigit != -1) && (val != oldVal)) {
-    // The knob has been turned; update the digit
-    if (val > 10) { val = 9; }
-    digits[editDigit] = val;
-    blinkCycle = 0;
-    valueChanged = true;
+
+  if (val != oldVal) {
+    if (editDigit != -1) { // setting the time & updating the values
+      if (val > 10) { val = 9; }
+      digits[editDigit] = val;
+      blinkCycle = 0;
+      valueChanged = true;
+    } else { // modifying the brightness of the display
+      if (val == 0) {
+        awake = false;
+        setTube(-1, -1);
+      } else {
+        OCR2A = ((val-1)*16) + 127;
+        IMAGINARY_TUBES = ((12*255) / OCR2A) - 12;
+        awake = true;
+      }
+    }
   }
 }
 
@@ -209,13 +224,16 @@ const int BCYCLEN=80;
 // Interrupt for udating the tubes
 //ISR(TIMER2_OVF_vect) {
 ISR(TIMER2_COMPA_vect) {
+  if (!awake) {
+    return;
+  }
   int d = digits[displayedDigit];
   if ((displayedDigit == editDigit) && (blinkCycle > (BCYCLEN/2))) {
     d = -1;
   }
   setTube(displayedDigit,d);
   displayedDigit++;
-  if (displayedDigit == 24) {
+  if (displayedDigit >= 12+IMAGINARY_TUBES) {
     displayedDigit = 0;
     blinkCycle = (blinkCycle+1)%BCYCLEN;
   }
